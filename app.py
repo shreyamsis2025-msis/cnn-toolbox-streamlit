@@ -7,7 +7,23 @@ import cv2
 import tensorflow as tf
 layers = tf.keras.layers
 models = tf.keras.models
+from tensorflow.keras.layers import Conv2D
+from tensorflow.keras import regularizers
 
+import os
+import tensorflow as tf
+
+@st.cache_resource
+def load_pretrained_model():
+    if os.path.exists("cnn_cifar10_demo.h5"):
+        return tf.keras.models.load_model("cnn_cifar10_demo.h5")
+    return None
+
+# Auto-load model
+if "model" not in st.session_state:
+    pretrained = load_pretrained_model()
+    if pretrained:
+        st.session_state["model"] = pretrained
 
 def enlarge(img, scale=8):
     return cv2.resize(
@@ -38,23 +54,37 @@ x_train = x_train / 255.0
 x_test  = x_test  / 255.0
 
 @st.cache_resource
-def build_model(filters1, filters2, kernel_size, dropout, lr):
+def build_model(filters1, filters2, kernel_size, dropout, lr, l2_val):
+
     model = tf.keras.Sequential([
-        layers.Conv2D(filters1, kernel_size, activation='relu',
-                      padding='same', input_shape=(32,32,3)),
+        layers.Conv2D(filters1, kernel_size,
+                      activation='relu',
+                      padding='same',
+                      kernel_regularizer=regularizers.l2(l2_val),
+                      input_shape=(32,32,3)),
         layers.BatchNormalization(),
-        layers.Conv2D(filters1, kernel_size, activation='relu', padding='same'),
+
+        layers.Conv2D(filters1, kernel_size,
+                      activation='relu',
+                      padding='same',
+                      kernel_regularizer=regularizers.l2(l2_val)),
         layers.MaxPooling2D(),
         layers.Dropout(dropout),
 
-        layers.Conv2D(filters2, kernel_size, activation='relu', padding='same'),
+        layers.Conv2D(filters2, kernel_size,
+                      activation='relu',
+                      padding='same',
+                      kernel_regularizer=regularizers.l2(l2_val)),
         layers.BatchNormalization(),
         layers.MaxPooling2D(),
         layers.Dropout(dropout),
 
         layers.Flatten(),
-        layers.Dense(256, activation='relu'),
+        layers.Dense(256,
+                     activation='relu',
+                     kernel_regularizer=regularizers.l2(l2_val)),
         layers.Dropout(dropout),
+
         layers.Dense(10, activation='softmax')
     ])
 
@@ -131,6 +161,11 @@ elif page == "Train CNN Model":
         filters1 = st.slider("Conv1 Filters", 16, 128, 32, step=16)
         filters2 = st.slider("Conv2 Filters", 32, 256, 64, step=32)
         kernel_size = st.selectbox("Kernel Size", [3,5])
+        l2_val = st.select_slider(
+    "L2 Regularization",
+    options=[0.0, 1e-5, 1e-4, 1e-3],
+    value=1e-4
+)
 
     with col2:
         dropout = st.slider("Dropout", 0.1, 0.6, 0.25)
@@ -150,7 +185,7 @@ elif page == "Train CNN Model":
     if st.button("Start Training"):
 
         model = build_model(filters1, filters2,
-                            kernel_size, dropout, lr)
+                    kernel_size, dropout, lr, l2_val)
 
         st.write("### 📈 Live Accuracy")
 
@@ -706,87 +741,67 @@ elif page == "Decision Boundary Visualizer":
     """)
 
 elif page == "CNN Animation":
-    
 
     import time
-    st.title("🎬 CNN Working Animation")
+    import tensorflow as tf
+    from tensorflow.keras import Model
 
-    st.write("""
-    Watch how a CNN processes an image step-by-step:
-    1️⃣ Convolution  
-    2️⃣ ReLU Activation  
-    3️⃣ Pooling  
-    4️⃣ Flatten  
-    5️⃣ Dense Layer Prediction  
-    """)
+    st.title("🎬 CNN Working Animation")
+    speed = st.slider("Animation Speed", 0.2, 3.0, 1.0)
+
+    if "model" not in st.session_state:
+        st.warning("⚠️ Train model first in 'Train CNN Model' page")
+        st.stop()
+
+    model = st.session_state["model"]
 
     idx = st.slider("Choose Image", 0, len(x_train)-1, 0)
-    img = x_train[idx] / 255.0
+    img = x_train[idx] 
     img_batch = img.reshape(1,32,32,3)
 
     placeholder = st.empty()
-    
-    # ---------------------------
-    # STEP 1 - Original Image
-    # ---------------------------
-    placeholder.image(enlarge(img), caption="Step 1: Input Image")
-    time.sleep(1.5)
 
     # ---------------------------
-    # STEP 2 - Convolution
+    # STEP 1 - Input Image
     # ---------------------------
-    conv = layers.Conv2D(4, 3, padding="same")
-    feature_maps = conv(img_batch).numpy()[0]
-
-    for i in range(4):
-        fm = feature_maps[:,:,i]
-        fm = (fm-fm.min())/(fm.max()-fm.min()+1e-8)
-        placeholder.image(enlarge(fm), caption=f"Step 2: Convolution Feature Map {i+1}")
-        time.sleep(1)
+    placeholder.image(enlarge(img, 10), caption="Step 1: Input Image")
+    st.button("Continue Animation")
+    time.sleep(speed)
 
     # ---------------------------
-    # STEP 3 - ReLU
+    # STEP 2 - Get REAL Feature Maps
     # ---------------------------
-    relu = np.maximum(feature_maps, 0)
+    conv_layers = [l for l in model.layers if isinstance(l, Conv2D)]
 
-    for i in range(4):
-        fm = relu[:,:,i]
-        fm = (fm-fm.min())/(fm.max()-fm.min()+1e-8)
-        placeholder.image(enlarge(fm), caption=f"Step 3: ReLU Feature Map {i+1}")
-        time.sleep(1)
+    for layer in conv_layers[:1]:  # show first conv layer
+        feature_model = Model(inputs=model.inputs,
+                              outputs=layer.output)
 
-    # ---------------------------
-    # STEP 4 - Pooling
-    # ---------------------------
-    pool = layers.MaxPooling2D()
-    pooled = pool(relu.reshape(1,*relu.shape)).numpy()[0]
+        feature_maps = feature_model.predict(img_batch)[0]
 
-    for i in range(4):
-        fm = pooled[:,:,i]
-        fm = (fm-fm.min())/(fm.max()-fm.min()+1e-8)
-        placeholder.image(enlarge(fm), caption=f"Step 4: Pooled Map {i+1}")
-        time.sleep(1)
+        for i in range(min(4, feature_maps.shape[-1])):
+            fm = feature_maps[:,:,i]
+            fm = (fm-fm.min())/(fm.max()-fm.min()+1e-8)
+            placeholder.image(enlarge(fm),
+                              caption=f"Step 2: Feature Map {i+1}")
+            time.sleep(0.8)
 
     # ---------------------------
-    # STEP 5 - Flatten
+    # STEP 3 - Prediction
     # ---------------------------
-    flat = pooled.flatten()
-    placeholder.write(f"Step 5: Flatten → Vector size = {len(flat)}")
-    time.sleep(1.5)
-
-    # ---------------------------
-    # STEP 6 - Dense
-    # ---------------------------
-    dense = layers.Dense(10, activation="softmax")
-    pred = dense(flat.reshape(1,-1)).numpy()[0]
-
+    pred = model.predict(img_batch)[0]
     predicted_class = class_names[np.argmax(pred)]
-    placeholder.write(f"Step 6: Prediction → {predicted_class}")
-    if "model" in st.session_state:
-        model = st.session_state["model"]
-        pred = model.predict(img_batch)
-        st.write("Prediction:", class_names[np.argmax(pred)])
-    else:
-        st.warning("Train model first in 'Train CNN Model' page")
+
+    placeholder.write(f"### 🎯 Prediction → {predicted_class}")
+
+    st.bar_chart(pred)
     st.success("🎉 CNN Finished Processing!")
+    
+    true_class = class_names[int(y_train[idx])]
+    st.write(f"Actual → {true_class}")
+    
+    if predicted_class == true_class:
+        st.success("✅ Correct Prediction")
+    else:
+        st.error("❌ Wrong Prediction")
 
